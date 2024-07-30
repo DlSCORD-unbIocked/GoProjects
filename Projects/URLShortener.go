@@ -2,8 +2,15 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
+	"sync"
 )
+
+type URLStore struct {
+	mappings map[string]string
+	mutex    sync.RWMutex
+}
 
 func main() {
 	http.HandleFunc("/", handleRoot)
@@ -39,4 +46,43 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func NewURLStore() *URLStore {
+	return &URLStore{
+		mappings: make(map[string]string),
+	}
+}
+
+func generateShortCode() string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	shortCode := make([]byte, 6)
+	for i := range shortCode {
+		shortCode[i] = charset[rand.Intn(len(charset))]
+	}
+	return string(shortCode)
+}
+
+func (store *URLStore) Get(shortCode string) (string, bool) {
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+
+	longURL, exists := store.mappings[shortCode]
+	return longURL, exists
+}
+
+func (store *URLStore) Save(longURL string) string {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	var shortCode string
+	for {
+		shortCode = generateShortCode()
+		if _, exists := store.mappings[shortCode]; !exists {
+			break
+		}
+	}
+
+	store.mappings[shortCode] = longURL
+	return shortCode
 }
