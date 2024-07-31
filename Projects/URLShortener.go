@@ -5,9 +5,11 @@ import (
 	"math/rand"
 	"net/http"
 	"sync"
+	"time"
 )
 
 var store = NewURLStore()
+var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type URLStore struct {
 	mappings map[string]string
@@ -15,7 +17,8 @@ type URLStore struct {
 }
 
 func main() {
-	http.HandleFunc("/", handleRoot)
+	http.HandleFunc("/", handleRedirect)
+	http.HandleFunc("/home", handleHome)
 	http.HandleFunc("/shorten", handleShorten)
 
 	port := ":8080"
@@ -23,16 +26,30 @@ func main() {
 	fmt.Printf("Server starting on port %s\n", port)
 
 	err := http.ListenAndServe(port, nil)
-
 	if err != nil {
 		fmt.Printf("Error starting server: %s\n", err)
 	}
 }
 
-func handleRoot(w http.ResponseWriter, r *http.Request) {
-	_, err := fmt.Fprint(w, "Shorten your urls")
+func handleHome(w http.ResponseWriter, r *http.Request) {
+	html := `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>URL Shortener</title>
+    </head>
+    <body>
+        <h1>URL Shortener</h1>
+        <form action="/shorten" method="post">
+            <input type="text" name="url" placeholder="Enter URL to shorten" required>
+            <input type="submit" value="Shorten">
+        </form>
+    </body>
+    </html>
+    `
+	_, err := fmt.Fprint(w, html)
 	if err != nil {
-		return
+		http.Error(w, "Error generating response", http.StatusInternalServerError)
 	}
 }
 
@@ -56,18 +73,53 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 	}
 	shortURL := fmt.Sprintf("%s://%s/%s", scheme, r.Host, shortCode)
 
-	_, err := fmt.Fprintf(w, "Shortened URL: %s", shortURL)
+	html := fmt.Sprintf(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>URL Shortened</title>
+    </head>
+    <body>
+        <h1>URL Shortened</h1>
+        <p>Shortened URL: <a href="%s">%s</a></p>
+        <a href="/">Go Back</a>
+    </body>
+    </html>
+    `, shortURL, shortURL)
+	_, err := fmt.Fprint(w, html)
 	if err != nil {
-		return
+		http.Error(w, "Error generating response", http.StatusInternalServerError)
 	}
 }
 
 func handleRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		handleHome(w, r)
+		return
+	}
+
 	shortCode := r.URL.Path[1:]
 	if longURL, exists := store.Get(shortCode); exists {
 		http.Redirect(w, r, longURL, http.StatusFound)
 	} else {
-		http.NotFound(w, r)
+		html := `
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>404 Not Found</title>
+        </head>
+        <body>
+            <h1>404 Not Found</h1>
+            <p>The URL you are looking for does not exist.</p>
+            <a href="/">Go Back</a>
+        </body>
+        </html>
+        `
+		w.WriteHeader(http.StatusNotFound)
+		_, err := fmt.Fprint(w, html)
+		if err != nil {
+			http.Error(w, "Error generating response", http.StatusInternalServerError)
+		}
 	}
 }
 
@@ -81,7 +133,7 @@ func generateShortCode() string {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	shortCode := make([]byte, 6)
 	for i := range shortCode {
-		shortCode[i] = charset[rand.Intn(len(charset))]
+		shortCode[i] = charset[seededRand.Intn(len(charset))]
 	}
 	return string(shortCode)
 }
