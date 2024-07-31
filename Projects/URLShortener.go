@@ -7,6 +7,8 @@ import (
 	"sync"
 )
 
+var store = NewURLStore()
+
 type URLStore struct {
 	mappings map[string]string
 	mutex    sync.RWMutex
@@ -35,16 +37,37 @@ func handleRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleShorten(w http.ResponseWriter, r *http.Request) {
-	if r.Method == "POST" {
-		_, err := fmt.Fprint(w, "test")
-		if err != nil {
-			return
-		}
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	longURL := r.FormValue("url")
+	if longURL == "" {
+		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	shortCode := store.Save(longURL)
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	shortURL := fmt.Sprintf("%s://%s/%s", scheme, r.Host, shortCode)
+
+	_, err := fmt.Fprintf(w, "Shortened URL: %s", shortURL)
+	if err != nil {
+		return
+	}
+}
+
+func handleRedirect(w http.ResponseWriter, r *http.Request) {
+	shortCode := r.URL.Path[1:]
+	if longURL, exists := store.Get(shortCode); exists {
+		http.Redirect(w, r, longURL, http.StatusFound)
 	} else {
-		_, err := fmt.Fprint(w, "Send a post request to shorten a url")
-		if err != nil {
-			return
-		}
+		http.NotFound(w, r)
 	}
 }
 
