@@ -2,9 +2,9 @@ package main
 
 // will use github.com/skip2/go-qrcode for qr implementation
 import (
-	"embed"
 	"encoding/json"
 	"fmt"
+	"github.com/skip2/go-qrcode"
 	"math/rand"
 	"net/http"
 	"net/url"
@@ -16,7 +16,6 @@ import (
 
 var store = NewURLStore()
 var seededRand = rand.New(rand.NewSource(time.Now().UnixNano()))
-var cssFile embed.FS
 
 type URLStore struct {
 	mappings map[string]URLRecord
@@ -39,7 +38,7 @@ func main() {
 	http.HandleFunc("/home", handleHome)
 	http.HandleFunc("/shorten", handleShorten)
 	http.HandleFunc("/URLShortener.css", serveCSS)
-	http.HandleFunc("/qr", handleQrCode)
+	http.HandleFunc("/qr", handleQRCode)
 	http.HandleFunc("/clicks/", handleGetClicks)
 
 	port := ":8080"
@@ -121,17 +120,25 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
                 <th>Short URL</th>
                 <th>Original URL</th>
                 <th>Clicks</th>
+                <th>QR Code</th>
             </tr>
     `
 
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+
 	for _, url := range urlList {
+		qrURL := fmt.Sprintf("%s://%s/qr?code=%s", scheme, r.Host, url.ShortCode)
 		html += fmt.Sprintf(`
             <tr>
                 <td><a href="/%s">%s</a></td>
                 <td>%s</td>
                 <td>%d</td>
+                <td><a href="%s" target="_blank">View QR</a></td>
             </tr>
-        `, url.ShortCode, url.ShortCode, url.LongURL, url.Clicks)
+        `, url.ShortCode, url.ShortCode, url.LongURL, url.Clicks, qrURL)
 	}
 
 	html += `
@@ -193,6 +200,7 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 		scheme = "https"
 	}
 	shortURL := fmt.Sprintf("%s://%s/%s", scheme, r.Host, shortCode)
+	qrURL := fmt.Sprintf("%s://%s/qr?code=%s", scheme, r.Host, shortCode)
 
 	html := fmt.Sprintf(`
     <!DOCTYPE html>
@@ -206,6 +214,9 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
         <h1>URL Shortened</h1>
         <p>Shortened URL: <a href="%s">%s</a></p>
         <p>Clicks: <span id="clicks">0</span></p>
+        <p>QR Code: <a href="%s" target="_blank">View QR Code</a></p>
+        <img src="%s" alt="QR Code" width="200" height="200">
+        <br>
         <a href="/">Go Back</a>
         <script>
         function updateClicks() {
@@ -215,12 +226,12 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
                     document.getElementById('clicks').textContent = data.clicks;
                 });
         }
-        setInterval(updateClicks, 5000); 
+        setInterval(updateClicks, 5000);
         updateClicks(); 
         </script>
     </body>
     </html>
-    `, shortURL, shortURL, shortCode)
+    `, shortURL, shortURL, qrURL, qrURL, shortCode)
 	_, err := fmt.Fprint(w, html)
 	if err != nil {
 		http.Error(w, "Error generating response", http.StatusInternalServerError)
@@ -359,6 +370,37 @@ func isValidURL(rawURL string) bool {
 	return parsedURL.Scheme != "" && parsedURL.Host != ""
 }
 
-func handleQrCode(w http.ResponseWriter, r *http.Request) {
-	http.NotFound(w, r)
+func handleQRCode(w http.ResponseWriter, r *http.Request) {
+	shortCode := r.URL.Query().Get("code")
+	if shortCode == "" {
+		http.Error(w, "Missing short code", http.StatusBadRequest)
+		return
+	}
+
+	store.mutex.RLock()
+	_, exists := store.mappings[shortCode]
+	store.mutex.RUnlock()
+
+	if !exists {
+		http.NotFound(w, r)
+		return
+	}
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	fullURL := fmt.Sprintf("%s://%s/%s", scheme, r.Host, shortCode)
+
+	qr, err := qrcode.Encode(fullURL, qrcode.Medium, 256)
+	if err != nil {
+		http.Error(w, "Failed to generate QR code", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "image/png")
+	_, err = w.Write(qr)
+	if err != nil {
+		return
+	}
 }
