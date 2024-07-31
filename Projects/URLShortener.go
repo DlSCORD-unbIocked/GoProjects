@@ -1,11 +1,13 @@
 package main
 
+// will use github.com/skip2/go-qrcode for qr implementation
 import (
 	"embed"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -37,6 +39,7 @@ func main() {
 	http.HandleFunc("/home", handleHome)
 	http.HandleFunc("/shorten", handleShorten)
 	http.HandleFunc("/URLShortener.css", serveCSS)
+	http.HandleFunc("/qr", handleQrCode)
 	http.HandleFunc("/clicks/", handleGetClicks)
 
 	port := ":8080"
@@ -47,6 +50,13 @@ func main() {
 	if err != nil {
 		fmt.Printf("Error starting server: %s\n", err)
 	}
+	//prolly want every hour but for testing do every 5 mins
+	go func() {
+		for {
+			time.Sleep(5 * time.Minute)
+			store.cleanupExpiredLinks()
+		}
+	}()
 }
 
 func serveCSS(w http.ResponseWriter, r *http.Request) {
@@ -73,13 +83,19 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 		ShortCode string
 		LongURL   string
 		Clicks    int
+		ExpiresAt time.Time
 	}, 0, len(store.mappings))
+
+	now := time.Now()
 	for shortCode, record := range store.mappings {
-		urlList = append(urlList, struct {
-			ShortCode string
-			LongURL   string
-			Clicks    int
-		}{shortCode, record.LongURL, record.Clicks})
+		if now.Before(record.ExpiresAt) {
+			urlList = append(urlList, struct {
+				ShortCode string
+				LongURL   string
+				Clicks    int
+				ExpiresAt time.Time
+			}{shortCode, record.LongURL, record.Clicks, record.ExpiresAt})
+		}
 	}
 	store.mutex.RUnlock()
 
@@ -141,6 +157,11 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 
 	if longURL == "" {
 		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	if !isValidURL(longURL) {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
 		return
 	}
 
@@ -217,7 +238,15 @@ func handleRedirect(w http.ResponseWriter, r *http.Request) {
 	record, exists := store.mappings[shortCode]
 	store.mutex.RUnlock()
 
-	if !exists || time.Now().After(record.ExpiresAt) {
+	if !exists {
+		http.NotFound(w, r)
+		return
+	}
+
+	if time.Now().After(record.ExpiresAt) {
+		store.mutex.Lock()
+		delete(store.mappings, shortCode)
+		store.mutex.Unlock()
 		http.NotFound(w, r)
 		return
 	}
@@ -308,4 +337,28 @@ func (store *URLStore) IncrementClicks(shortCode string) {
 		record.Clicks++
 		store.mappings[shortCode] = record
 	}
+}
+
+func (store *URLStore) cleanupExpiredLinks() {
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	now := time.Now()
+	for shortCode, record := range store.mappings {
+		if now.After(record.ExpiresAt) {
+			delete(store.mappings, shortCode)
+		}
+	}
+}
+
+func isValidURL(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return parsedURL.Scheme != "" && parsedURL.Host != ""
+}
+
+func handleQrCode(w http.ResponseWriter, r *http.Request) {
+	http.NotFound(w, r)
 }
