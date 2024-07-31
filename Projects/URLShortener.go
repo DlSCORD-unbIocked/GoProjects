@@ -1,15 +1,18 @@
 package main
 
 import (
+	"embed"
 	"fmt"
 	"math/rand"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
 
 var store = NewURLStore()
-var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
+var seededRand = rand.New(rand.NewSource(time.Now().UnixNano()))
+var cssFile embed.FS
 
 type URLStore struct {
 	mappings map[string]URLRecord
@@ -17,14 +20,16 @@ type URLStore struct {
 }
 
 type URLRecord struct {
-	LongURL   string
-	ExpiresAt time.Time
+	LongURL    string
+	ExpiresAt  time.Time
+	CustomName string
 }
 
 func main() {
 	http.HandleFunc("/", handleRedirect)
 	http.HandleFunc("/home", handleHome)
 	http.HandleFunc("/shorten", handleShorten)
+	http.HandleFunc("/URLShortener.css", serveCSS)
 
 	port := ":8080"
 
@@ -36,6 +41,24 @@ func main() {
 	}
 }
 
+func serveCSS(w http.ResponseWriter, r *http.Request) {
+	//ccurrently hardcoded change later
+	path := ""
+	content, err := os.ReadFile(path)
+	if err != nil {
+		fmt.Printf("Error reading CSS file: %v\n", err)
+		http.Error(w, "Could not read CSS file", http.StatusInternalServerError)
+		return
+	}
+	fmt.Printf("CSS file size: %d bytes\n", len(content))
+	w.Header().Set("Content-Type", "text/css")
+	_, err = w.Write(content)
+	if err != nil {
+		fmt.Printf("Error writing CSS response: %v\n", err)
+		http.Error(w, "Error writing CSS response", http.StatusInternalServerError)
+	}
+}
+
 func handleHome(w http.ResponseWriter, r *http.Request) {
 	// :heart: jetbrains mono
 	html := `
@@ -43,39 +66,15 @@ func handleHome(w http.ResponseWriter, r *http.Request) {
 	<html>
 	<head>
 		<title>URL Shortener</title>
-		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
-		<style>
-			body {
-				font-family: 'JetBrains Mono', monospace;
-			}
-	
-			input[type="text"],
-			input[type="submit"] {
-				font-family: 'JetBrains Mono', monospace;
-				font-size: 16px; 
-				padding: 8px; 
-				margin: 4px; 
-				border: 1px solid #ccc; 
-				border-radius: 4px; 
-			}
-	
-			input[type="submit"] {
-				background-color: #007BFF; 
-				color: white; 
-				border: none; 
-				cursor: pointer; 
-			}
-	
-			input[type="submit"]:hover {
-				background-color: #0056b3; 
-			}
-		</style>
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap">
+		<link rel="stylesheet" href="/URLShortener.css">
 	</head>
 	<body>
 		<h1>URL Shortener</h1>
 		<form action="/shorten" method="post">
 			<input type="text" name="url" placeholder="Enter URL to shorten" required>
 			<input type="text" name="expires_in" placeholder="Expiration (e.g., 24h)" optional>
+			<input type="text" name="custom_name" placeholder="Custom name (optional)">
 			<input type="submit" value="Shorten">
 		</form>
 	</body>
@@ -94,6 +93,8 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 	}
 
 	longURL := r.FormValue("url")
+	customName := r.FormValue("custom_name")
+
 	if longURL == "" {
 		http.Error(w, "URL is required", http.StatusBadRequest)
 		return
@@ -101,7 +102,7 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 
 	expirationStr := r.FormValue("expires_in")
 	fmt.Println(expirationStr)
-	var expiresIn time.Duration = 3 * time.Minute //for testing change ltr to 24hrs maybe
+	var expiresIn = 24 * time.Hour //for testing change ltr to 24hrs maybe
 	if expirationStr != "" {
 		var err error
 		expiresIn, err = time.ParseDuration(expirationStr)
@@ -111,7 +112,16 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	shortCode := store.Save(longURL, expiresIn)
+	var shortCode string
+	if customName != "" {
+		if store.IsCustomNameAvailable(customName) {
+			shortCode = customName
+		} else {
+			http.Error(w, "Custom name already in use", http.StatusBadRequest)
+			return
+		}
+	}
+	shortCode = store.Save(longURL, expiresIn, customName)
 
 	scheme := "http"
 	if r.TLS != nil {
@@ -124,17 +134,13 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
     <html>
     <head>
         <title>URL Shortened</title>
-		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
-		<style>
-			body {
-				font-family: 'JetBrains Mono', monospace;
-			}
-		</style>
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono&display=swap">
+		<link rel="stylesheet" href="/URLShortener.css">
     </head>
     <body>
         <h1>URL Shortened</h1>
         <p>Shortened URL: <a href="%s">%s</a></p>
-        <a href="/">Go Back</a>
+        <a id="back" href="/">Go Back</a>
     </body>
     </html>
     `, shortURL, shortURL)
@@ -189,21 +195,33 @@ func (store *URLStore) Get(shortCode string) (string, bool) {
 	return record.LongURL, true
 }
 
-func (store *URLStore) Save(longURL string, expiresIn time.Duration) string {
+func (store *URLStore) Save(longURL string, expiresIn time.Duration, customName string) string {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
 	var shortCode string
-	for {
-		shortCode = generateShortCode()
-		if _, exists := store.mappings[shortCode]; !exists {
-			break
+	if customName != "" {
+		shortCode = customName
+	} else {
+		for {
+			shortCode = generateShortCode()
+			if _, exists := store.mappings[shortCode]; !exists {
+				break
+			}
 		}
 	}
 
 	store.mappings[shortCode] = URLRecord{
-		LongURL:   longURL,
-		ExpiresAt: time.Now().Add(expiresIn),
+		LongURL:    longURL,
+		ExpiresAt:  time.Now().Add(expiresIn),
+		CustomName: customName,
 	}
 	return shortCode
+}
+
+func (store *URLStore) IsCustomNameAvailable(name string) bool {
+	store.mutex.RLock()
+	defer store.mutex.RUnlock()
+	_, exists := store.mappings[name]
+	return !exists
 }
