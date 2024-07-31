@@ -12,8 +12,13 @@ var store = NewURLStore()
 var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 type URLStore struct {
-	mappings map[string]string
+	mappings map[string]URLRecord
 	mutex    sync.RWMutex
+}
+
+type URLRecord struct {
+	LongURL   string
+	ExpiresAt time.Time
 }
 
 func main() {
@@ -32,20 +37,49 @@ func main() {
 }
 
 func handleHome(w http.ResponseWriter, r *http.Request) {
+	// :heart: jetbrains mono
 	html := `
     <!DOCTYPE html>
-    <html>
-    <head>
-        <title>URL Shortener</title>
-    </head>
-    <body>
-        <h1>URL Shortener</h1>
-        <form action="/shorten" method="post">
-            <input type="text" name="url" placeholder="Enter URL to shorten" required>
-            <input type="submit" value="Shorten">
-        </form>
-    </body>
-    </html>
+	<html>
+	<head>
+		<title>URL Shortener</title>
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+		<style>
+			body {
+				font-family: 'JetBrains Mono', monospace;
+			}
+	
+			input[type="text"],
+			input[type="submit"] {
+				font-family: 'JetBrains Mono', monospace;
+				font-size: 16px; 
+				padding: 8px; 
+				margin: 4px; 
+				border: 1px solid #ccc; 
+				border-radius: 4px; 
+			}
+	
+			input[type="submit"] {
+				background-color: #007BFF; 
+				color: white; 
+				border: none; 
+				cursor: pointer; 
+			}
+	
+			input[type="submit"]:hover {
+				background-color: #0056b3; 
+			}
+		</style>
+	</head>
+	<body>
+		<h1>URL Shortener</h1>
+		<form action="/shorten" method="post">
+			<input type="text" name="url" placeholder="Enter URL to shorten" required>
+			<input type="text" name="expires_in" placeholder="Expiration (e.g., 24h)" optional>
+			<input type="submit" value="Shorten">
+		</form>
+	</body>
+	</html>
     `
 	_, err := fmt.Fprint(w, html)
 	if err != nil {
@@ -65,7 +99,19 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shortCode := store.Save(longURL)
+	expirationStr := r.FormValue("expires_in")
+	fmt.Println(expirationStr)
+	var expiresIn time.Duration = 3 * time.Minute //for testing change ltr to 24hrs maybe
+	if expirationStr != "" {
+		var err error
+		expiresIn, err = time.ParseDuration(expirationStr)
+		if err != nil {
+			http.Error(w, "Invalid expiration duration", http.StatusBadRequest)
+			return
+		}
+	}
+
+	shortCode := store.Save(longURL, expiresIn)
 
 	scheme := "http"
 	if r.TLS != nil {
@@ -78,6 +124,12 @@ func handleShorten(w http.ResponseWriter, r *http.Request) {
     <html>
     <head>
         <title>URL Shortened</title>
+		<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap">
+		<style>
+			body {
+				font-family: 'JetBrains Mono', monospace;
+			}
+		</style>
     </head>
     <body>
         <h1>URL Shortened</h1>
@@ -99,33 +151,21 @@ func handleRedirect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	shortCode := r.URL.Path[1:]
-	if longURL, exists := store.Get(shortCode); exists {
-		http.Redirect(w, r, longURL, http.StatusFound)
-	} else {
-		html := `
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>404 Not Found</title>
-        </head>
-        <body>
-            <h1>404 Not Found</h1>
-            <p>The URL you are looking for does not exist.</p>
-            <a href="/">Go Back</a>
-        </body>
-        </html>
-        `
-		w.WriteHeader(http.StatusNotFound)
-		_, err := fmt.Fprint(w, html)
-		if err != nil {
-			http.Error(w, "Error generating response", http.StatusInternalServerError)
-		}
+	store.mutex.RLock()
+	record, exists := store.mappings[shortCode]
+	store.mutex.RUnlock()
+
+	if !exists || time.Now().After(record.ExpiresAt) {
+		http.NotFound(w, r)
+		return
 	}
+
+	http.Redirect(w, r, record.LongURL, http.StatusFound)
 }
 
 func NewURLStore() *URLStore {
 	return &URLStore{
-		mappings: make(map[string]string),
+		mappings: make(map[string]URLRecord),
 	}
 }
 
@@ -142,11 +182,14 @@ func (store *URLStore) Get(shortCode string) (string, bool) {
 	store.mutex.RLock()
 	defer store.mutex.RUnlock()
 
-	longURL, exists := store.mappings[shortCode]
-	return longURL, exists
+	record, exists := store.mappings[shortCode]
+	if !exists || time.Now().After(record.ExpiresAt) {
+		return "", false
+	}
+	return record.LongURL, true
 }
 
-func (store *URLStore) Save(longURL string) string {
+func (store *URLStore) Save(longURL string, expiresIn time.Duration) string {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
@@ -158,6 +201,9 @@ func (store *URLStore) Save(longURL string) string {
 		}
 	}
 
-	store.mappings[shortCode] = longURL
+	store.mappings[shortCode] = URLRecord{
+		LongURL:   longURL,
+		ExpiresAt: time.Now().Add(expiresIn),
+	}
 	return shortCode
 }
