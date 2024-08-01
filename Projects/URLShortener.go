@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,7 +37,7 @@ func init() {
 func main() {
 	http.HandleFunc("/", handleRedirect)
 	http.HandleFunc("/home", handleHome)
-	http.HandleFunc("/shorten", handleShorten)
+	http.HandleFunc("/shorten", referrerCheck(handleShorten))
 	http.HandleFunc("/URLShortener.css", serveCSS)
 	http.HandleFunc("/qr", handleQRCode)
 	http.HandleFunc("/clicks/", handleGetClicks)
@@ -402,5 +403,31 @@ func handleQRCode(w http.ResponseWriter, r *http.Request) {
 	_, err = w.Write(qr)
 	if err != nil {
 		return
+	}
+}
+
+// use in /api/... maybe
+func apiKeyMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey != "test" { // temp for testing
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}
+}
+
+func referrerCheck(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/shorten" {
+			referer := r.Header.Get("Referer")
+			if !strings.HasPrefix(referer, "http://localhost:8080/") &&
+				!strings.HasPrefix(referer, "https://localhost:8080/") {
+				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
 	}
 }
