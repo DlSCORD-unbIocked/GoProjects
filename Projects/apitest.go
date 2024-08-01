@@ -14,7 +14,7 @@ const (
 )
 
 func main() {
-	fmt.Println("Enter a URL to shorten:")
+	fmt.Println("Enter a URL to shorten: ")
 	var longURL string
 	_, err := fmt.Scanln(&longURL)
 	if err != nil {
@@ -28,6 +28,12 @@ func main() {
 	}
 	fmt.Printf("Shortened URL: %s\n", shortURL)
 
+	urlInfo, err := getURLInfo(shortURL)
+	if err != nil {
+		fmt.Printf("Error getting URL info: %v\n", err)
+		return
+	}
+	fmt.Printf("URL Info: %+v\n", urlInfo)
 }
 
 func shortenURL(longURL, customName, expiresIn string) (string, error) {
@@ -78,5 +84,40 @@ func shortenURL(longURL, customName, expiresIn string) (string, error) {
 }
 
 func getURLInfo(shortURL string) (map[string]interface{}, error) {
-	return nil, nil
+	shortCode := shortURL[len(baseURL)+1:]
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/api/url?code=%s", baseURL, shortCode), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("X-API-Key", apiKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+
+		}
+	}(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API request failed with status code: %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	err = json.Unmarshal(body, &result)
+	if err != nil {
+		return nil, err
+	}
+
+	return result, nil
 }
