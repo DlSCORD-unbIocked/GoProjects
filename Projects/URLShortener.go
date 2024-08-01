@@ -2,6 +2,7 @@ package main
 
 // will use github.com/skip2/go-qrcode for qr implementation
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/skip2/go-qrcode"
@@ -35,6 +36,18 @@ func init() {
 }
 
 func main() {
+	err := initDB()
+	if err != nil {
+		fmt.Printf("Error initializing database: %s\n", err)
+		return
+	}
+	defer func(db *sql.DB) {
+		err := db.Close()
+		if err != nil {
+			fmt.Printf("Error closing database: %v\n", err)
+		}
+	}(db)
+
 	http.HandleFunc("/", handleRedirect)
 	http.HandleFunc("/home", handleHome)
 	http.HandleFunc("/shorten", referrerCheck(handleShorten))
@@ -50,7 +63,7 @@ func main() {
 
 	fmt.Printf("Server starting on port %s\n", port)
 
-	err := http.ListenAndServe(port, nil)
+	err = http.ListenAndServe(port, nil)
 	if err != nil {
 		fmt.Printf("Error starting server: %s\n", err)
 	}
