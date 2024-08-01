@@ -2,11 +2,11 @@ package main
 
 // will use github.com/skip2/go-qrcode for qr implementation
 import (
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"github.com/skip2/go-qrcode"
 	"math/rand"
+	_ "modernc.org/sqlite"
 	"net/http"
 	"net/url"
 	"os"
@@ -31,22 +31,25 @@ type URLRecord struct {
 	Clicks     int
 }
 
+var err error
+
 func init() {
 	fmt.Println("URL Shortener starting...")
 }
 
 func main() {
-	err := initDB()
-	if err != nil {
-		fmt.Printf("Error initializing database: %s\n", err)
-		return
-	}
-	defer func(db *sql.DB) {
-		err := db.Close()
-		if err != nil {
-			fmt.Printf("Error closing database: %v\n", err)
-		}
-	}(db)
+	//fmt.Println("URL Shortener started")
+	//err := initDB()
+	//if err != nil {
+	//	fmt.Printf("Error initializing database: %s\n", err)
+	//	return
+	//}
+	//defer func(db *sql.DB) {
+	//	err := db.Close()
+	//	if err != nil {
+	//		fmt.Printf("Error closing database: %v\n", err)
+	//	}
+	//}(db)
 
 	http.HandleFunc("/", handleRedirect)
 	http.HandleFunc("/home", handleHome)
