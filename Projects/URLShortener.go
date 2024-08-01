@@ -42,6 +42,10 @@ func main() {
 	http.HandleFunc("/qr", handleQRCode)
 	http.HandleFunc("/clicks/", handleGetClicks)
 
+	http.HandleFunc("/api/shorten", apiKeyMiddleware(handleAPIShorten))
+	http.HandleFunc("/api/url", apiKeyMiddleware(handleAPIGetURL))
+	http.HandleFunc("/api/docs", handleAPIDocs)
+
 	port := ":8080"
 
 	fmt.Printf("Server starting on port %s\n", port)
@@ -280,6 +284,120 @@ func handleGetClicks(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	err := json.NewEncoder(w).Encode(map[string]int{"clicks": record.Clicks})
+	if err != nil {
+		return
+	}
+}
+
+func handleAPIShorten(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var input struct {
+		LongURL    string `json:"long_url"`
+		CustomName string `json:"custom_name,omitempty"`
+		ExpiresIn  string `json:"expires_in,omitempty"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if input.LongURL == "" {
+		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	expiresIn, err := time.ParseDuration(input.ExpiresIn)
+	if err != nil {
+		expiresIn = 24 * time.Hour
+	}
+
+	shortCode := store.Save(input.LongURL, expiresIn, input.CustomName)
+
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	}
+	shortURL := fmt.Sprintf("%s://%s/%s", scheme, r.Host, shortCode)
+
+	response := struct {
+		ShortURL string `json:"short_url"`
+	}{
+		ShortURL: shortURL,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	err = json.NewEncoder(w).Encode(response)
+	if err != nil {
+		return
+	}
+}
+
+func handleAPIGetURL(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	shortCode := r.URL.Query().Get("code")
+	if shortCode == "" {
+		http.Error(w, "Missing short code", http.StatusBadRequest)
+		return
+	}
+
+	store.mutex.RLock()
+	record, exists := store.mappings[shortCode]
+	store.mutex.RUnlock()
+
+	if !exists || time.Now().After(record.ExpiresAt) {
+		http.NotFound(w, r)
+		return
+	}
+
+	response := struct {
+		LongURL    string `json:"long_url"`
+		Clicks     int    `json:"clicks"`
+		ExpiresAt  string `json:"expires_at"`
+		CustomName string `json:"custom_name,omitempty"`
+	}{
+		LongURL:    record.LongURL,
+		Clicks:     record.Clicks,
+		ExpiresAt:  record.ExpiresAt.Format(time.RFC3339),
+		CustomName: record.CustomName,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	err := json.NewEncoder(w).Encode(response)
+	if err != nil {
+		return
+	}
+}
+
+func handleAPIDocs(w http.ResponseWriter, r *http.Request) {
+	docs := `
+    API Documentation:
+
+    1. Shorten URL
+       Endpoint: POST /api/shorten
+       Headers: X-API-Key: your-secret-api-key
+       Body: {
+           "long_url": "https://example.com",
+           "custom_name": "optional-custom-name",
+           "expires_in": "24h" // put in any time ie. 24h, 1h, 30m, 1s
+       }
+
+    2. Get URL Info
+       Endpoint: GET /api/url?code=<short_code>
+       Headers: X-API-Key: your-secret-api-key
+
+    `
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, err := w.Write([]byte(docs))
 	if err != nil {
 		return
 	}
