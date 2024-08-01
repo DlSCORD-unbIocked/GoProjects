@@ -3,37 +3,55 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 )
 
 const (
 	baseURL = "http://localhost:8080"
-	apiKey  = "test"
+)
+
+var (
+	apiKey = "test"
 )
 
 func main() {
-	fmt.Println("Enter a URL to shorten: ")
-	var longURL string
-	_, err := fmt.Scanln(&longURL)
-	if err != nil {
-		fmt.Printf("Error reading URL: %v\n", err)
-		return
-	}
-	shortURL, err := shortenURL(longURL, "test", "2h")
-	if err != nil {
-		fmt.Printf("Error shortening URL: %v\n", err)
-		return
-	}
-	fmt.Printf("Shortened URL: %s\n", shortURL)
+	operationPtr := flag.String("op", "shorten", "Choose: shorten, info, test")
+	urlPtr := flag.String("url", "", "URL to shorten or get info for")
+	customNamePtr := flag.String("custom", "", "(Optional) Custom name for shortened URL")
+	expiresInPtr := flag.String("expires", "24h", "(Optional) Expiration time for shortened URL")
 
-	urlInfo, err := getURLInfo(shortURL)
-	if err != nil {
-		fmt.Printf("Error getting URL info: %v\n", err)
+	flag.Parse()
+
+	if *operationPtr == "test" {
+		testErrorCases()
 		return
 	}
-	fmt.Printf("URL Info: %+v\n", urlInfo)
+	if *urlPtr == "" {
+		log.Fatal("URL is required")
+	}
+
+	switch *operationPtr {
+	case "shorten":
+		shortURL, err := shortenURL(*urlPtr, *customNamePtr, *expiresInPtr)
+		if err != nil {
+			log.Fatalf("Error shortening URL: %v", err)
+		}
+		fmt.Printf("Shortened URL: %s\n", shortURL)
+
+	case "info":
+		urlInfo, err := getURLInfo(*urlPtr)
+		if err != nil {
+			log.Fatalf("Error getting URL info: %v", err)
+		}
+		fmt.Printf("URL Info: %+v\n", urlInfo)
+
+	default:
+		log.Fatalf("Unknown operation: %s", *operationPtr)
+	}
 }
 
 func shortenURL(longURL, customName, expiresIn string) (string, error) {
@@ -120,4 +138,45 @@ func getURLInfo(shortURL string) (map[string]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+func testErrorCases() {
+	fmt.Println("Running error case tests...")
+
+	fmt.Println("\nTesting invalid URL:")
+	_, err := shortenURL("not-a-valid-url", "", "1h")
+	if err == nil {
+		fmt.Println("Expected error for invalid URL, but got none")
+	} else {
+		fmt.Printf("Correctly received error for invalid URL: %v\n", err)
+	}
+
+	fmt.Println("\nTesting non-existent short code:")
+	_, err = getURLInfo("http://localhost:8080/nonexistent")
+	if err == nil {
+		fmt.Println("Expected error for non-existent short code, but got none")
+	} else {
+		fmt.Printf("Correctly received error for non-existent short code: %v\n", err)
+	}
+
+	fmt.Println("\nTesting invalid expiration time:")
+	_, err = shortenURL("https://example.com", "", "invalid-time")
+	if err == nil {
+		fmt.Println("Expected error for invalid expiration time, but got none")
+	} else {
+		fmt.Printf("Correctly received error for invalid expiration time: %v\n", err)
+	}
+
+	fmt.Println("\nTesting invalid API key:")
+	originalAPIKey := apiKey
+	apiKey = "invalid-key"
+	_, err = shortenURL("https://example.com", "", "1h")
+	if err == nil {
+		fmt.Println("Expected error for invalid API key, but got none")
+	} else {
+		fmt.Printf("Correctly received error for invalid API key: %v\n", err)
+	}
+	apiKey = originalAPIKey
+
+	fmt.Println("\nError case tests completed.")
 }

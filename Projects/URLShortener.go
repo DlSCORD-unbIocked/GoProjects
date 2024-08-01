@@ -311,6 +311,11 @@ func handleAPIShorten(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !isValidURL(input.LongURL) {
+		http.Error(w, "Invalid URL format", http.StatusBadRequest)
+		return
+	}
+
 	expiresIn, err := time.ParseDuration(input.ExpiresIn)
 	if err != nil {
 		expiresIn = 24 * time.Hour
