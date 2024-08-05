@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"strings"
 )
 
 func main() {
 	http.HandleFunc("/", root)
 	http.HandleFunc("/proxy", proxy)
 	http.HandleFunc("/query", queryTest)
+	http.HandleFunc("/html", htmlPage)
 	fmt.Println("Starting server")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatal(err)
@@ -37,23 +36,7 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Proxying request to: %s", testURL)
 
-	req, err := http.NewRequest("GET", testURL, nil)
-	if err != nil {
-		log.Printf("Error creating request: %v", err)
-		http.Error(w, fmt.Sprintf("Error creating request: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	for name, values := range r.Header {
-		for _, value := range values {
-			req.Header.Add(name, value)
-		}
-	}
-
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	resp, err := http.Get(testURL)
 	if err != nil {
 		log.Printf("Error fetching response: %v", err)
 		http.Error(w, fmt.Sprintf("Error fetching response: %v", err), http.StatusInternalServerError)
@@ -68,53 +51,80 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Received response with status: %d", resp.StatusCode)
 
-	for name, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(name, value)
-		}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("Error reading response body: %v", err)
+		http.Error(w, fmt.Sprintf("Error reading response body: %v", err), http.StatusInternalServerError)
+		return
 	}
+
+	log.Printf("Received content length: %d bytes", len(body))
 
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+
 	w.WriteHeader(resp.StatusCode)
-
-	contentType := resp.Header.Get("Content-Type")
-	if strings.Contains(contentType, "text/html") {
-		fmt.Println("found")
-		reader := bufio.NewReader(resp.Body)
-		for {
-			line, err := reader.ReadString('\n')
-			if err != nil {
-				if err == io.EOF {
-					break
-				}
-				log.Printf("Error reading line: %v", err)
-				return
-			}
-
-			line = strings.Replace(line, "href=\"/", fmt.Sprintf("href=\"/proxy?url=%s/", testURL), -1)
-			line = strings.Replace(line, "src=\"/", fmt.Sprintf("src=\"/proxy?url=%s/", testURL), -1)
-
-			_, err = w.Write([]byte(line))
-			if err != nil {
-				log.Printf("Error writing line: %v", err)
-				return
-			}
-		}
-	} else {
-		_, err = io.Copy(w, resp.Body)
-		if err != nil {
-			log.Printf("Error streaming response: %v", err)
-		}
+	_, err = w.Write(body)
+	if err != nil {
+		log.Printf("Error writing response: %v", err)
 	}
+
+	log.Printf("Proxy request completed")
 }
 
 func queryTest(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	name := query.Get("name")
 	_, err := fmt.Fprint(w, "Name: ", name)
+	if err != nil {
+		return
+	}
+}
+
+func htmlPage(w http.ResponseWriter, r *http.Request) {
+	html := `
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Proxy Redirect</title>
+        <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+    </head>
+    <body>
+        <h1>Proxy Page</h1>
+        <form id="proxyForm">
+            <input type="url" id="urlInput" placeholder="Enter URL" required>
+            <button type="submit">Load Content</button>
+        </form>
+        <div id="debug"></div>
+        <div id="content"></div>
+        <script>
+            $(document).ready(function() {
+                $("#proxyForm").submit(function(e) {
+                    e.preventDefault();
+                    var url = $("#urlInput").val();
+                    $("#debug").html("Sending request...");
+                    $("#content").html("Loading...");
+                    $.ajax({
+                        url: "/proxy?url=" + encodeURIComponent(url),
+                        type: 'GET',
+                        success: function(data, textStatus, jqXHR) {
+                            $("#debug").html("Request successful. Status: " + jqXHR.status);
+                            $("#content").html(data);
+                        },
+                        error: function(jqXHR, textStatus, errorThrown) {
+                            $("#debug").html("Request failed. Status: " + jqXHR.status + errorThrown);
+                        }
+                    });
+                });
+            });
+        </script>
+    </body>
+    </html>
+    `
+	_, err := fmt.Fprint(w, html)
 	if err != nil {
 		return
 	}
