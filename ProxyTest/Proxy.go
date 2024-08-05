@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"strings"
 )
 
 func main() {
@@ -25,20 +27,36 @@ func root(w http.ResponseWriter, r *http.Request) {
 }
 
 func proxy(w http.ResponseWriter, r *http.Request) {
-	testURL := "https://www.google.com"
+	query := r.URL.Query()
+	testURL := query.Get("url")
+
+	if testURL == "" {
+		http.Error(w, "URL is required", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Proxying request to: %s", testURL)
 
 	req, err := http.NewRequest("GET", testURL, nil)
 	if err != nil {
-		_ = fmt.Errorf("error creating request: %v", err)
+		log.Printf("Error creating request: %v", err)
+		http.Error(w, fmt.Sprintf("Error creating request: %v", err), http.StatusInternalServerError)
+		return
 	}
 
-	req.Header = r.Header
-	fmt.Println("Request Headers: ", req.Header)
+	for name, values := range r.Header {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		http.Error(w, "Error fetching response", http.StatusInternalServerError)
+		log.Printf("Error fetching response: %v", err)
+		http.Error(w, fmt.Sprintf("Error fetching response: %v", err), http.StatusInternalServerError)
 		return
 	}
 	defer func(Body io.ReadCloser) {
@@ -48,13 +66,49 @@ func proxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}(resp.Body)
 
+	log.Printf("Received response with status: %d", resp.StatusCode)
+
 	for name, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(name, value)
 		}
 	}
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
 	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
+
+	contentType := resp.Header.Get("Content-Type")
+	if strings.Contains(contentType, "text/html") {
+		fmt.Println("found")
+		reader := bufio.NewReader(resp.Body)
+		for {
+			line, err := reader.ReadString('\n')
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+				log.Printf("Error reading line: %v", err)
+				return
+			}
+
+			line = strings.Replace(line, "href=\"/", fmt.Sprintf("href=\"/proxy?url=%s/", testURL), -1)
+			line = strings.Replace(line, "src=\"/", fmt.Sprintf("src=\"/proxy?url=%s/", testURL), -1)
+
+			_, err = w.Write([]byte(line))
+			if err != nil {
+				log.Printf("Error writing line: %v", err)
+				return
+			}
+		}
+	} else {
+		_, err = io.Copy(w, resp.Body)
+		if err != nil {
+			log.Printf("Error streaming response: %v", err)
+		}
+	}
 }
 
 func queryTest(w http.ResponseWriter, r *http.Request) {
